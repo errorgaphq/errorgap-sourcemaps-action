@@ -1,0 +1,98 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  uploads:
+    name: Uploads every map under the directory
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start a mock Errorgap
+        run: |
+          nohup node .github/mock-errorgap.js "$PWD/requests.log" > mock.log 2>&1 &
+          sleep 1
+          cat mock.log
+      - name: Make some source maps
+        run: |
+          mkdir -p dist/assets dist/chunks dist/node_modules/x
+          echo '{"version":3,"sources":["app.js"],"mappings":""}' > dist/assets/app.js.map
+          echo '{"version":3,"sources":["vendor.js"],"mappings":""}' > dist/chunks/vendor.js.map
+          echo '{"version":3}' > dist/node_modules/x/skip.js.map
+      - id: upload
+        uses: ./
+        with:
+          directory: dist
+          release: abc123
+          upload-key: test-upload-key
+          endpoint: http://127.0.0.1:8787
+          project-slug: demo
+      - name: Check what the mock received
+        run: |
+          cat requests.log
+          test "${{ steps.upload.outputs.status }}" = "uploaded"
+          test "$(wc -l < requests.log)" = "2"
+          grep -q '"method":"PUT","url":"/api/projects/demo/sourcemaps?release=abc123&file=%2Fassets%2Fapp.js"' requests.log
+          grep -q '"url":"/api/projects/demo/sourcemaps?release=abc123&file=%2Fchunks%2Fvendor.js"' requests.log
+          ! grep -q 'skip.js' requests.log
+          test "$(grep -c '"key":"test-upload-key"' requests.log)" = "2"
+
+  url-prefix-and-env:
+    name: Takes the prefix and the connection from the environment
+    runs-on: ubuntu-latest
+    env:
+      ERRORGAP_ENDPOINT: http://127.0.0.1:8787
+      ERRORGAP_PROJECT_SLUG: from-env
+      ERRORGAP_UPLOAD_KEY: env-upload-key
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          nohup node .github/mock-errorgap.js "$PWD/requests.log" > mock.log 2>&1 &
+          sleep 1
+          mkdir -p out/_nuxt
+          echo '{"version":3}' > out/_nuxt/entry.js.map
+      - uses: ./
+        with:
+          directory: out
+          url-prefix: /_nuxt-site
+      - run: |
+          cat requests.log
+          grep -q '"url":"/api/projects/from-env/sourcemaps?release=${{ github.sha }}&file=%2F_nuxt-site%2F_nuxt%2Fentry.js"' requests.log
+          grep -q '"key":"env-upload-key"' requests.log
+
+  skips-without-key:
+    name: Skips without an upload key
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          nohup node .github/mock-errorgap.js "$PWD/requests.log" > mock.log 2>&1 &
+          sleep 1
+          mkdir -p dist && echo '{"version":3}' > dist/app.js.map
+      - id: upload
+        uses: ./
+        with:
+          directory: dist
+          endpoint: http://127.0.0.1:8787
+          project-slug: demo
+      - run: |
+          test "${{ steps.upload.outputs.status }}" = "skipped"
+          test ! -s requests.log
+
+  fails-when-rejected:
+    name: Fails when the maps aren't accepted
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: mkdir -p dist && echo '{"version":3}' > dist/app.js.map
+      - id: upload
+        continue-on-error: true
+        uses: ./
+        with:
+          directory: dist
+          upload-key: test-upload-key
+          endpoint: http://127.0.0.1:9
+          project-slug: demo
+      - run: test "${{ steps.upload.outcome }}" = "failure"

@@ -1,0 +1,86 @@
+name: Upload source maps to Errorgap
+description: >-
+  Upload every .map file under a directory to an Errorgap project for a
+  release, so browser errors resolve to the original source. Runs
+  `npx @errorgap/node sourcemaps`. Skips without an upload key.
+author: Errorgap
+branding:
+  icon: map
+  color: red
+
+inputs:
+  directory:
+    description: The directory to search for .map files (recursively; node_modules is skipped).
+    required: true
+  release:
+    description: The release the maps belong to, as reported by the SDK. Defaults to the commit being built.
+    required: false
+    default: ${{ github.sha }}
+  url-prefix:
+    description: >-
+      The path the files are served from. A map at <directory>/assets/app.js.map
+      is filed under /assets/app.js, or /<url-prefix>/assets/app.js with a prefix.
+    required: false
+    default: ""
+  upload-key:
+    description: The project's upload key (a secret). Falls back to ERRORGAP_UPLOAD_KEY in the environment; skips when neither is set.
+    required: false
+    default: ""
+  endpoint:
+    description: The Errorgap instance. Falls back to ERRORGAP_ENDPOINT in the environment.
+    required: false
+    default: ""
+  project-slug:
+    description: The project's slug. Falls back to ERRORGAP_PROJECT_SLUG in the environment.
+    required: false
+    default: ""
+  cli-version:
+    description: The @errorgap/node version that does the upload.
+    required: false
+    default: "0.5.0"
+
+outputs:
+  status:
+    description: "'uploaded' when the CLI accepted every map, 'skipped' when there was no upload key."
+    value: ${{ steps.upload.outputs.status }}
+
+runs:
+  using: composite
+  steps:
+    - id: upload
+      shell: bash
+      env:
+        INPUT_DIRECTORY: ${{ inputs.directory }}
+        INPUT_RELEASE: ${{ inputs.release }}
+        INPUT_URL_PREFIX: ${{ inputs.url-prefix }}
+        INPUT_UPLOAD_KEY: ${{ inputs.upload-key }}
+        INPUT_ENDPOINT: ${{ inputs.endpoint }}
+        INPUT_PROJECT_SLUG: ${{ inputs.project-slug }}
+        INPUT_CLI_VERSION: ${{ inputs.cli-version }}
+      run: |
+        if [[ -n "$INPUT_UPLOAD_KEY" ]]; then
+          export ERRORGAP_UPLOAD_KEY="$INPUT_UPLOAD_KEY"
+        fi
+        if [[ -z "${ERRORGAP_UPLOAD_KEY:-}" ]]; then
+          echo "No Errorgap upload key; skipping source maps."
+          echo "status=skipped" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        echo "::add-mask::$ERRORGAP_UPLOAD_KEY"
+        if [[ -n "$INPUT_ENDPOINT" ]]; then
+          export ERRORGAP_ENDPOINT="$INPUT_ENDPOINT"
+        fi
+        if [[ -n "$INPUT_PROJECT_SLUG" ]]; then
+          export ERRORGAP_PROJECT_SLUG="$INPUT_PROJECT_SLUG"
+        fi
+        if [[ ! -d "$INPUT_DIRECTORY" ]]; then
+          echo "::error::$INPUT_DIRECTORY is not a directory"
+          exit 1
+        fi
+
+        args=(sourcemaps "$INPUT_DIRECTORY" --release "${INPUT_RELEASE:-$GITHUB_SHA}")
+        if [[ -n "$INPUT_URL_PREFIX" ]]; then
+          args+=(--url-prefix "$INPUT_URL_PREFIX")
+        fi
+        npx --yes "@errorgap/node@$INPUT_CLI_VERSION" "${args[@]}"
+        echo "status=uploaded" >> "$GITHUB_OUTPUT"
